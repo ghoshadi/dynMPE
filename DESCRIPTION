@@ -1,0 +1,19 @@
+Package: dynMPE
+Type: Package
+Title: Dynamic Marginal Policy Effects in Thresholding Designs
+Version: 0.1.0
+Authors@R: c(
+    person("Aditya", "Ghosh", email = "ghoshadi@stanford.edu", role = c("aut", "cre")),
+    person("Stefan", "Wager", role = "aut"))
+Description: Estimates the dynamic marginal policy effect of a threshold rule,
+    the effect on long-run discounted outcomes of marginally moving the cutoff
+    of a policy that is applied repeatedly to the same units, using the
+    twice-discounted local linear regression of Ghosh and Wager (2025)
+    <doi:10.48550/arXiv.2512.15244>. The bandwidth is chosen by a dynamic
+    version of the Imbens and Kalyanaraman (2012) rule, standard errors are
+    cluster-robust by unit, and confidence intervals use the bias-aware
+    critical value of Armstrong and Kolesar (2020).
+License: MIT + file LICENSE
+Encoding: UTF-8
+Imports: stats
+Config/roxygen2/version: 8.0.0
