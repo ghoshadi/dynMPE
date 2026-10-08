@@ -3,11 +3,8 @@ kernels <- list(
   uniform = function(u) 0.5 * (abs(u) <= 1),
   epanechnikov = function(u) 0.75 * pmax(1 - u^2, 0))
 
-# xi1: bias constant of the one-sided local linear kernel; CK: constant of the IK bandwidth.
-kernel_constants <- cbind(
-  triangular = c(xi1 = -1 / 10, CK = 480^(1 / 5)),
-  uniform = c(xi1 = -1 / 6, CK = 144^(1 / 5)),
-  epanechnikov = c(xi1 = -11 / 95, CK = (284160 / 847)^(1 / 5)))
+# Bias constant of the one-sided local linear equivalent kernel.
+kernel_xi1 <- c(triangular = -1 / 10, uniform = -1 / 6, epanechnikov = -11 / 95)
 
 # Sorts by unit and period and computes Gamma_t = R_t + gamma Gamma_{t+1} within each unit.
 make_panel <- function(data, outcome, running_var, time_index, unit_index, threshold,
@@ -110,30 +107,105 @@ ratio_fit <- function(panel, threshold, gamma, h, kernel, vcov, time_fe) {
        denominator = c(estimate = jump[2], se = sqrt(sum(den^2))), n_obs = sum(keep))
 }
 
-# Sharp Imbens-Kalyanaraman bandwidth for y on x - threshold, as in plrd::IK_bandwidth.
-ik_bandwidth <- function(y, x, kernel) {
-  n <- length(y)
-  right <- x >= 0
-  left <- !right
-  if (n < 10 || !any(left) || !any(right)) stop("too few observations on one side of the threshold")
-  h1 <- 1.84 * stats::sd(x) * n^(-1 / 5)
-  near <- list(left & x >= -h1, right & x <= h1)
-  n1 <- vapply(near, sum, 1)
-  if (any(n1 <= 1)) stop("too few observations near the threshold")
-  sigma2 <- vapply(near, function(i) stats::var(y[i]), 1)
-  f <- sum(n1) / (2 * n * h1)
-  m3 <- 6 * stats::lm.fit(cbind(1, right, x, x^2, x^3), y)$coefficients[[5]]
-  if (is.na(m3)) stop("the cubic pilot regression is rank-deficient")
-  h2 <- 7200^(1 / 7) * (sigma2 / (f * m3^2))^(1 / 7) * c(sum(left), sum(right))^(-1 / 7)
-  near <- list(left & x >= -h2[1], right & x <= h2[2])
-  n2 <- vapply(near, sum, 1)
-  if (any(n2 <= 2)) stop("too few observations for the curvature pilot")
-  m2 <- vapply(near, function(i) 2 * stats::lm.fit(cbind(1, x[i], x[i]^2), y[i])$coefficients[[3]], 1)
-  if (anyNA(m2)) stop("the quadratic pilot regression is rank-deficient")
+#' Compute MSE-optimal Imbens-Kalyanaraman bandwidth for a sharp RD.
+#'
+#' This convenience function computes weights using the Imbens-Kalyanaraman bandwidth procedure.
+#' The code does exactly what the MATLAB code available on the author's website does.
+#'
+#' @param Y The outcomes.
+#' @param X The running variable.
+#' @param threshold The threshold.
+#' @param kernel The kernel type used to construct weights within the bandwidth.
+#'
+#' @return A list containing the sample weights along with optimal bandwidth.
+#'
+#' @references Imbens, G., and Kalyanaraman, K. (2012).
+#'  Optimal Bandwidth Choice for the Regression Discontinuity Estimator.
+#'  The Review of Economic Studies, 79(3).
+#'
+#' @examples
+#' set.seed(42)
+#' n = 1000; threshold = 0
+#' X = runif(n, -1, 1)
+#' W = as.numeric(X >= threshold)
+#' Y = (1 + 2*W)*(1 + X^2) + 1 / (1 + exp(X)) + rnorm(n, sd = .5)
+#' out = IK_bandwidth(Y, X, threshold)
+#'
+#' @export
+IK_bandwidth <- function(Y, X, threshold,
+                         kernel = c("triangular", "uniform", "epanechnikov")) {
+  if (length(Y) != length(X)) stop("'Y' and 'X' must have the same length.")
+  if (threshold >= max(X) || threshold <= min(X))
+    stop("RD threshold is outside the running variable range.")
+
+  kernel <- match.arg(kernel)
+  x <- X - threshold; n <- length(x)
+  left <- x < 0; right <- !left
+
+  # Density and conditional variances at the threshold
+  h1 <- 1.84 * stats::sd(x) * n^(-1/5)
+  i.min <- left & x >= -h1
+  i.plus <- right & x <= h1
+  n1 <- c(sum(i.min), sum(i.plus))
+  if (any(n1 <= 1)) stop("Insufficient observations near discontinuity.")
+
+  sigma2 <- c(stats::var(Y[i.min]), stats::var(Y[i.plus]))
+  fc <- sum(n1) / (2 * n * h1)
+
+  # Pilot third derivative and bandwidths for second derivatives
+  m3 <- 6 * unname(stats::lm.fit(cbind(1, right, x, x^2, x^3), Y)$coefficients[5])
+  if (is.na(m3))
+    stop("The IK cubic pilot regression is rank-deficient.")
+
+  h2 <- 7200^(1/7) *
+    (sigma2 / (fc * m3^2))^(1/7) *
+    c(sum(left), sum(right))^(-1/7)
+
+  i.min <- left & x >= -h2[1]
+  i.plus <- right & x <= h2[2]
+  n2 <- c(sum(i.min), sum(i.plus))
+  if (any(n2 <= 2)) stop("Insufficient observations near discontinuity.")
+
+  m2 <- c(
+    2 * unname(stats::lm.fit(cbind(1, x[i.min], x[i.min]^2), Y[i.min])$coefficients[3]),
+    2 * unname(stats::lm.fit(cbind(1, x[i.plus], x[i.plus]^2), Y[i.plus])$coefficients[3])
+  )
+
+  if (is.na(m2[1]))
+    stop("The IK quadratic pilot regression is rank-deficient below the threshold.")
+  if (is.na(m2[2]))
+    stop("The IK quadratic pilot regression is rank-deficient above the threshold.")
+
+  # Regularization and optimal bandwidth
   r <- 2160 * sigma2 / (n2 * h2^4)
-  h <- kernel_constants[["CK", kernel]] * (sum(sigma2) / (f * ((m2[2] - m2[1])^2 + sum(r))) / n)^(1 / 5)
-  if (!is.finite(h) || h <= 0) stop("the bandwidth is not positive and finite")
-  h
+  CK <- switch(kernel,
+               triangular   = 480^(1/5),
+               uniform      = 144^(1/5),
+               epanechnikov = (284160 / 847)^(1/5)
+  )
+
+  h.opt <- CK *
+    (sum(sigma2) / (fc * ((m2[2] - m2[1])^2 + sum(r))))^(1/5) *
+    n^(-1/5)
+
+  if (h.opt <= 0)
+    stop("The calculated IK bandwidth is not positive.")
+
+  if (!is.finite(h.opt))
+    stop("The calculated IK bandwidth is not finite.")
+
+  # Kernel weights, normalized to sum to one
+  u <- abs(x / h.opt)
+  weights <- switch(kernel,
+                    triangular   = pmax(1 - u, 0),
+                    uniform      = as.numeric(u <= 1),
+                    epanechnikov = pmax(1 - u^2, 0)
+  )
+
+  list(
+    bandwidth = unname(h.opt),
+    weights = weights / sum(weights)
+  )
 }
 
 # Procedure (dynamic-ik-bandwidth) of Ghosh and Wager (2025), with n the number of units.
@@ -141,7 +213,7 @@ dynamic_bandwidth <- function(panel, threshold, gamma, kernel, vcov, time_fe) {
   x <- panel$z - threshold
   finite <- is.finite(x)
   n <- panel$n_units
-  h_pilot <- tryCatch(ik_bandwidth(panel$gy[finite], x[finite], kernel), error = function(e) {
+  h_pilot <- tryCatch(IK_bandwidth(panel$gy[finite], panel$z[finite], threshold, kernel)$bandwidth, error = function(e) {
     warning("The sharp IK pilot bandwidth failed (", conditionMessage(e),
             "); Silverman's rule was used instead.", call. = FALSE)
     1.84 * stats::sd(x[finite]) * sum(finite)^(-1 / 5)
@@ -179,7 +251,7 @@ dynamic_bandwidth <- function(panel, threshold, gamma, kernel, vcov, time_fe) {
   curvature <- cluster_fit(X, resid[keep], (kw * wt)[keep], panel$cluster[keep], vcov)
   B <- curvature$coef[ncol(X), 1]
   R <- sum(curvature$influence[[1]][, ncol(X)]^2)
-  h <- (V / (kernel_constants[["xi1", kernel]]^2 * (B^2 + 3 * R)))^(1 / 5) * n^(-1 / 5)
+  h <- (V / (kernel_xi1[[kernel]]^2 * (B^2 + 3 * R)))^(1 / 5) * n^(-1 / 5)
   if (!is.finite(h) || h <= 0) stop("The dynamic bandwidth is not positive and finite.")
   h
 }

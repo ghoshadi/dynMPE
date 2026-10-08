@@ -2,4 +2,5 @@
 
 S3method(print,dynMPE)
 S3method(summary,dynMPE)
+export(IK_bandwidth)
 export(dynMPE)
