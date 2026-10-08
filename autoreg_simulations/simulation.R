@@ -1,4 +1,4 @@
-# Autoregressive simulation for Ghosh and Wager (arXiv:2512.15244).
+# Autoregressive simulations from Ghosh and Wager (arXiv:2512.15244).
 if (!requireNamespace("dynMPE", quietly = TRUE)) remotes::install_github("ghoshadi/dynMPE")
 library(dynMPE)
 for (f in c("shared_helpers", "static_rd", "naive_rd", "cellini_rd"))
@@ -23,7 +23,14 @@ simulate_z <- function(n, s, thresh, p = dgp) {
 
 # tau_RD by a central difference in the threshold; the per-lag jumps at Z_0 = c0 by setting
 # A_0 to 1 and to 0 with the same innovations.
-oracle <- function(s, gammas, n_oracle = 1e6, cores = 1, h = 0.25, batch = 25000, seed = 1e6, p = dgp) {
+oracle <- function(s, 
+                   gammas, 
+                   n_oracle = 1e6, 
+                   cores = 1, 
+                   h = 0.25, 
+                   batch = 25000, 
+                   seed = 1e6, 
+                   p = dgp) {
   sizes <- diff(unique(c(seq(0, n_oracle, by = batch), n_oracle)))
   w <- outer(0:(p$horizon - 1), gammas, function(t, g) g^t)
   sums <- function(f) Reduce(`+`, parallel::mclapply(seq_along(sizes), f, mc.cores = cores)) / n_oracle
